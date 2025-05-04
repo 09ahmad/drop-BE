@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc -b",
     "start": "node dist/server.js",
-    "dev": "npm run build && npm start"
+    "dev": "npm run build && npm start",
+    "vercel-build": "npm run build && npx prisma generate"
   },
   "keywords": [],
   "author": "",

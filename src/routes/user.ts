@@ -324,4 +324,17 @@ router.post("/logout", authMiddleware, async (req: Request, res: Response) => {
   }
 });
 
+router.get("/users-details",async(req,res)=>{
+  const response = await prisma.user.findMany();
+  if(!response){
+    res.json({
+      message:"Unable to get users details"
+    })
+    return;
+  }
+  res.json({
+    response
+  })
+})
+
 export default router;
