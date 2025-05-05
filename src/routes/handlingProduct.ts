@@ -107,29 +107,127 @@ router.get(
 router.put(
   "/update-products/:id",
   authMiddleware,
+  upload.array("images"), // Add the multer middleware to parse multipart/form-data
   async (req: Request, res: Response) => {
     const { id } = req.params;
-    const { name, description, price, category, stock } = req.body;
-
+    
     try {
+      // Check if req.body exists after multer processing
+      if (!req.body) {
+         res.status(400).json({ error: "Request body is missing" });
+         return
+      }
+      
+      console.log("Request body:", req.body); // For debugging
+      
+      const { name, description, price, category, stock, imagesToDelete } = req.body;
+      
+      // Handle existing product update
       const updatedProduct = await prisma.product.update({
         where: { id },
         data: {
-          name,
-          description,
-          price: price ? parseFloat(price) : undefined,
-          category,
-          stock: stock ? parseInt(stock) : undefined,
+          ...(name !== undefined && { name }),
+          ...(description !== undefined && { description }),
+          ...(price !== undefined && { price: parseFloat(price) }),
+          ...(category !== undefined && { category }),
+          ...(stock !== undefined && { stock: parseInt(stock) }),
           updatedAt: new Date(),
         },
+        include: {
+          images: true, // Include images in the response
+        },
       });
-      res.status(200).json({ message: "Product updated", updatedProduct });
-    } catch (error) {
-      res.status(500).json({ error: "Error updating product" });
+      
+      // Process image deletion if needed
+      if (imagesToDelete) {
+        try {
+          const imageIds = JSON.parse(imagesToDelete);
+          
+          // Find images to get their URLs for Cloudinary deletion
+          const imagesToRemove = await prisma.productImage.findMany({
+            where: { 
+              id: { in: imageIds },
+              productId: id
+            }
+          });
+          
+          // Delete images from Cloudinary
+          for (const image of imagesToRemove) {
+            try {
+              // Extract public_id from Cloudinary URL
+              const publicId = image.url.split('/').pop()?.split('.')[0];
+              if (publicId) {
+                await cloudinary.uploader.destroy(`products/${publicId}`);
+              }
+            } catch (cloudinaryError) {
+              console.error("Error deleting from Cloudinary:", cloudinaryError);
+              // Continue with other deletions even if one fails
+            }
+          }
+          
+          // Delete from database
+          await prisma.productImage.deleteMany({
+            where: { 
+              id: { in: imageIds },
+              productId: id
+            }
+          });
+        } catch (parseError) {
+          console.error("Error parsing imagesToDelete:", parseError);
+        }
+      }
+      
+      // Process new image uploads
+      const imageUploads = [];
+      // @ts-ignore - req.files comes from multer
+      if (req.files && req.files.length > 0) {
+        // @ts-ignore
+        for (const file of req.files) {
+          const b64 = Buffer.from(file.buffer).toString("base64");
+          let dataURI = "data:" + file.mimetype + ";base64," + b64;
+          
+          const cloudinaryResponse = await cloudinary.uploader.upload(dataURI, {
+            folder: "products",
+          });
+          
+          // @ts-ignore
+          const isPrimary = updatedProduct.images.length === 0 && imageUploads.length === 0;
+          
+          imageUploads.push({
+            url: cloudinaryResponse.secure_url,
+            altText: file.originalname,
+            isPrimary,
+            productId: id
+          });
+        }
+        
+        // Add new images to the product
+        if (imageUploads.length > 0) {
+          await prisma.productImage.createMany({
+            data: imageUploads
+          });
+        }
+      }
+      
+      // Fetch the final updated product with all changes
+      const finalProduct = await prisma.product.findUnique({
+        where: { id },
+        include: { images: true }
+      });
+      
+      res.status(200).json({ 
+        message: "Product updated successfully", 
+        updatedProduct: finalProduct 
+      });
+    } catch (error:any) {
+      console.error("Error updating product:", error);
+      res.status(500).json({ 
+        error: "Error updating product", 
+        details: error.message 
+      });
     }
   }
 );
-
 router.delete(
   "/delete-products/:id",
   authMiddleware,

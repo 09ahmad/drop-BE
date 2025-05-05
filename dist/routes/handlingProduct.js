@@ -100,25 +100,106 @@ router.get("/item-details/:id", middleware_1.authMiddleware, (req, res) => __awa
         res.status(500).json({ error: "Could not fetch products" });
     }
 }));
-router.put("/update-products/:id", middleware_1.authMiddleware, (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+router.put("/update-products/:id", middleware_1.authMiddleware, upload.array("images"), // Add the multer middleware to parse multipart/form-data
+(req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     const { id } = req.params;
-    const { name, description, price, category, stock } = req.body;
     try {
+        // Check if req.body exists after multer processing
+        if (!req.body) {
+            res.status(400).json({ error: "Request body is missing" });
+            return;
+        }
+        console.log("Request body:", req.body); // For debugging
+        const { name, description, price, category, stock, imagesToDelete } = req.body;
+        // Handle existing product update
         const updatedProduct = yield index_1.prisma.product.update({
             where: { id },
-            data: {
-                name,
-                description,
-                price: price ? parseFloat(price) : undefined,
-                category,
-                stock: stock ? parseInt(stock) : undefined,
-                updatedAt: new Date(),
+            data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, (name !== undefined && { name })), (description !== undefined && { description })), (price !== undefined && { price: parseFloat(price) })), (category !== undefined && { category })), (stock !== undefined && { stock: parseInt(stock) })), { updatedAt: new Date() }),
+            include: {
+                images: true, // Include images in the response
             },
         });
-        res.status(200).json({ message: "Product updated", updatedProduct });
+        // Process image deletion if needed
+        if (imagesToDelete) {
+            try {
+                const imageIds = JSON.parse(imagesToDelete);
+                // Find images to get their URLs for Cloudinary deletion
+                const imagesToRemove = yield index_1.prisma.productImage.findMany({
+                    where: {
+                        id: { in: imageIds },
+                        productId: id
+                    }
+                });
+                // Delete images from Cloudinary
+                for (const image of imagesToRemove) {
+                    try {
+                        // Extract public_id from Cloudinary URL
+                        const publicId = (_a = image.url.split('/').pop()) === null || _a === void 0 ? void 0 : _a.split('.')[0];
+                        if (publicId) {
+                            yield cloudinary_1.v2.uploader.destroy(`products/${publicId}`);
+                        }
+                    }
+                    catch (cloudinaryError) {
+                        console.error("Error deleting from Cloudinary:", cloudinaryError);
+                        // Continue with other deletions even if one fails
+                    }
+                }
+                // Delete from database
+                yield index_1.prisma.productImage.deleteMany({
+                    where: {
+                        id: { in: imageIds },
+                        productId: id
+                    }
+                });
+            }
+            catch (parseError) {
+                console.error("Error parsing imagesToDelete:", parseError);
+            }
+        }
+        // Process new image uploads
+        const imageUploads = [];
+        // @ts-ignore - req.files comes from multer
+        if (req.files && req.files.length > 0) {
+            // @ts-ignore
+            for (const file of req.files) {
+                const b64 = Buffer.from(file.buffer).toString("base64");
+                let dataURI = "data:" + file.mimetype + ";base64," + b64;
+                const cloudinaryResponse = yield cloudinary_1.v2.uploader.upload(dataURI, {
+                    folder: "products",
+                });
+                // @ts-ignore
+                const isPrimary = updatedProduct.images.length === 0 && imageUploads.length === 0;
+                imageUploads.push({
+                    url: cloudinaryResponse.secure_url,
+                    altText: file.originalname,
+                    isPrimary,
+                    productId: id
+                });
+            }
+            // Add new images to the product
+            if (imageUploads.length > 0) {
+                yield index_1.prisma.productImage.createMany({
+                    data: imageUploads
+                });
+            }
+        }
+        // Fetch the final updated product with all changes
+        const finalProduct = yield index_1.prisma.product.findUnique({
+            where: { id },
+            include: { images: true }
+        });
+        res.status(200).json({
+            message: "Product updated successfully",
+            updatedProduct: finalProduct
+        });
     }
     catch (error) {
-        res.status(500).json({ error: "Error updating product" });
+        console.error("Error updating product:", error);
+        res.status(500).json({
+            error: "Error updating product",
+            details: error.message
+        });
     }
 }));
 router.delete("/delete-products/:id", middleware_1.authMiddleware, (req, res) => __awaiter(void 0, void 0, void 0, function* () {
